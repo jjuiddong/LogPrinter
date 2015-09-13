@@ -1,0 +1,2 @@
+# LogPrinter
+text file printer
