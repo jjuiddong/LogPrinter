@@ -33,6 +33,7 @@ public:
 	void OnDropFiles(wxDropFilesEvent& event);
 	void OnContextMenu(wxContextMenuEvent& event);
 	void OnMenuToggleTopMost(wxCommandEvent& event);
+	void OnMenuClear(wxCommandEvent& event);
 
 
 private:
@@ -47,6 +48,7 @@ enum
 	Minimal_Quit = wxID_EXIT,
 	Minimal_About = wxID_ABOUT,
 	MENU_TOGGLE_TOPMOST=10000,
+	MENU_CLEAR,
 };
 
 wxBEGIN_EVENT_TABLE(MyFrame, wxFrame)
@@ -54,6 +56,7 @@ EVT_MENU(Minimal_Quit, MyFrame::OnQuit)
 EVT_SIZE(MyFrame::OnSize)
 EVT_CONTEXT_MENU(MyFrame::OnContextMenu)
 EVT_MENU(MENU_TOGGLE_TOPMOST, MyFrame::OnMenuToggleTopMost)
+EVT_MENU(MENU_CLEAR, MyFrame::OnMenuClear)
 wxEND_EVENT_TABLE()
 
 wxIMPLEMENT_APP(MyApp);
@@ -127,6 +130,7 @@ void MyFrame::OnContextMenu(wxContextMenuEvent& event)
 
 	wxMenu menu;
 	menu.AppendCheckItem(MENU_TOGGLE_TOPMOST, wxT("&Toggle TopMost"));
+	menu.AppendCheckItem(MENU_CLEAR, wxT("&Clear"));
 	menu.Check(MENU_TOGGLE_TOPMOST, m_isTopMost);
 	PopupMenu(&menu, point);
 }
@@ -134,6 +138,12 @@ void MyFrame::OnContextMenu(wxContextMenuEvent& event)
 void MyFrame::OnMenuToggleTopMost(wxCommandEvent& event)
 {
 	ToggleTopMost();	
+}
+
+void MyFrame::OnMenuClear(wxCommandEvent& event)
+{
+	if (m_listCtrl)
+		m_listCtrl->DeleteAllItems();
 }
 
 void MyFrame::OnSize(wxSizeEvent& event)
