@@ -39,6 +39,7 @@ public:
 private:
 	wxListCtrl *m_listCtrl;
 	std::string m_fileName;
+	int m_maxLineCount = 100; // 화면에 출력할 최대 라인 수 (실행인자 값으로 설정 가능, 두 번째 인자)
 	bool m_isReload;
 	bool m_isTopMost;
 	wxDECLARE_EVENT_TABLE();
@@ -100,6 +101,12 @@ MyFrame::MyFrame(const wxString& title)
 	{
 		m_fileName = __argv[1];
 	}
+
+	if (__argc > 2)
+	{
+		m_maxLineCount = atoi(__argv[2]);
+	}
+
 
 	if (!m_fileName.empty())
 		SetTitle(m_fileName);
@@ -233,6 +240,9 @@ void MyFrame::MainLoop()
 				{
 					m_listCtrl->SetItemTextColour(0, wxColour(255, 0, 0));
 				}
+
+				if (m_listCtrl->GetItemCount() > m_maxLineCount)
+					m_listCtrl->DeleteItem(m_listCtrl->GetItemCount() - 1);
 			}
 		}
 
