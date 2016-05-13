@@ -1,3 +1,13 @@
+//
+// 2016-05-13, jjuiddong
+// 
+//	- first version
+//		- 로그 출력, error 빨강, Topmost, Clear
+//
+// - ver 1.0
+//		- display row line number
+//
+//
 
 #include "wx/wxprec.h"
 #ifndef WX_PRECOMP
@@ -9,7 +19,14 @@
 #include <string>
 #include <fstream>
 #include <mmsystem.h>
+#include <sstream>
+#include <iomanip> // setw()
 using std::string;
+
+string g_version = "ver 1.01";
+__int64 g_oldFileSize = -1;
+std::streampos g_oldPos = 0;
+
 
 #pragma comment (lib, "winmm.lib")
 
@@ -33,6 +50,7 @@ public:
 	void OnDropFiles(wxDropFilesEvent& event);
 	void OnContextMenu(wxContextMenuEvent& event);
 	void OnMenuToggleTopMost(wxCommandEvent& event);
+	void OnMenuToggleRowNum(wxCommandEvent& event);
 	void OnMenuClear(wxCommandEvent& event);
 
 
@@ -42,6 +60,8 @@ private:
 	int m_maxLineCount = 100; // 화면에 출력할 최대 라인 수 (실행인자 값으로 설정 가능, 두 번째 인자)
 	bool m_isReload;
 	bool m_isTopMost;
+	bool m_isRowNum;
+	int m_rowNumber;
 	wxDECLARE_EVENT_TABLE();
 };
 enum
@@ -49,6 +69,7 @@ enum
 	Minimal_Quit = wxID_EXIT,
 	Minimal_About = wxID_ABOUT,
 	MENU_TOGGLE_TOPMOST=10000,
+	MENU_TOGGLE_ROWNUM,
 	MENU_CLEAR,
 };
 
@@ -57,6 +78,7 @@ EVT_MENU(Minimal_Quit, MyFrame::OnQuit)
 EVT_SIZE(MyFrame::OnSize)
 EVT_CONTEXT_MENU(MyFrame::OnContextMenu)
 EVT_MENU(MENU_TOGGLE_TOPMOST, MyFrame::OnMenuToggleTopMost)
+EVT_MENU(MENU_TOGGLE_ROWNUM, MyFrame::OnMenuToggleRowNum)
 EVT_MENU(MENU_CLEAR, MyFrame::OnMenuClear)
 wxEND_EVENT_TABLE()
 
@@ -82,9 +104,11 @@ bool MyApp::OnInit()
 }
 
 MyFrame::MyFrame(const wxString& title)
-	: wxFrame(NULL, wxID_ANY, title, wxDefaultPosition, wxSize(500, 500))
+	: wxFrame(NULL, wxID_ANY, title + " - " + g_version, wxDefaultPosition, wxSize(500, 500))
 	, m_isReload(true)
 	, m_isTopMost(false)
+	, m_isRowNum(true)
+	, m_rowNumber(1)
 {
 	SetIcon(wxICON(sample));
 
@@ -109,7 +133,7 @@ MyFrame::MyFrame(const wxString& title)
 
 
 	if (!m_fileName.empty())
-		SetTitle(m_fileName);
+		SetTitle(m_fileName + " - " + g_version);
 
 	DragAcceptFiles(true);
 	Connect(wxEVT_DROP_FILES, wxDropFilesEventHandler(MyFrame::OnDropFiles), NULL, this);
@@ -137,8 +161,10 @@ void MyFrame::OnContextMenu(wxContextMenuEvent& event)
 
 	wxMenu menu;
 	menu.AppendCheckItem(MENU_TOGGLE_TOPMOST, wxT("&Toggle TopMost"));
+	menu.AppendCheckItem(MENU_TOGGLE_ROWNUM, wxT("&Toggle Row Number"));
 	menu.AppendCheckItem(MENU_CLEAR, wxT("&Clear"));
 	menu.Check(MENU_TOGGLE_TOPMOST, m_isTopMost);
+	menu.Check(MENU_TOGGLE_ROWNUM, m_isRowNum);
 	PopupMenu(&menu, point);
 }
 
@@ -147,10 +173,16 @@ void MyFrame::OnMenuToggleTopMost(wxCommandEvent& event)
 	ToggleTopMost();	
 }
 
+void MyFrame::OnMenuToggleRowNum(wxCommandEvent& event)
+{
+	m_isRowNum = !m_isRowNum;
+}
+
 void MyFrame::OnMenuClear(wxCommandEvent& event)
 {
 	if (m_listCtrl)
 		m_listCtrl->DeleteAllItems();
+	m_rowNumber = 1;
 }
 
 void MyFrame::OnSize(wxSizeEvent& event)
@@ -169,7 +201,7 @@ void MyFrame::OnDropFiles(wxDropFilesEvent& event)
 		m_isReload = true;
 
 		if (!m_fileName.empty())
-			SetTitle(m_fileName);
+			SetTitle(m_fileName + " - " + g_version);
 	}
 }
 
@@ -185,8 +217,6 @@ __int64 FileSize(std::string name)
 }
 
 
-__int64 g_oldFileSize = -1;
-std::streampos g_oldPos = 0;
 // 파일 사이즈가 바뀌면, 파일 정보를 출력한다.
 void MyFrame::MainLoop()
 {
@@ -201,16 +231,15 @@ void MyFrame::MainLoop()
 		return;
 	oldT = curT;
 
-	//const string fileName = "D:/Project/StrikerX/Bin/log.txt";
 	const __int64 curSize = FileSize(m_fileName);
 	if (curSize <= 0)
 		return;
 
 	if (m_isReload || (curSize != g_oldFileSize))
 	{
-		ifstream ifs(m_fileName, ios_base::binary);
-		if (!ifs.is_open())
-			return;
+		ifstream ifs(m_fileName);
+ 		if (!ifs.is_open())
+ 			return;
 
 		if (m_isReload || (curSize < g_oldFileSize))
 		{
@@ -219,7 +248,7 @@ void MyFrame::MainLoop()
 		}
 		else
 		{
-			ifs.seekg(g_oldPos);
+			ifs.seekg(g_oldPos, std::ios::beg);
 		}
 
 		while (1)
@@ -228,14 +257,27 @@ void MyFrame::MainLoop()
 
  			string line;
  			getline(ifs, line);
+
 			if (ifs.eof())
 				break;
+
 			if (!line.empty() && (line != "\r"))
 			{
-				m_listCtrl->InsertItem(0, line);
+				stringstream ss;
+
+				if (m_isRowNum)
+				{
+					ss << std::setw(5) << m_rowNumber << "    ";
+					++m_rowNumber;
+				}
+
+				ss << line;
+
+				const string str = ss.str();
+				m_listCtrl->InsertItem(0, str);
 				
-				const int pos1 = line.find("error");
-				const int pos2 = line.find("Error");
+				const int pos1 = str.find("error");
+				const int pos2 = str.find("Error");
 				if ((pos1 != string::npos) || (pos2 != string::npos))
 				{
 					m_listCtrl->SetItemTextColour(0, wxColour(255, 0, 0));
@@ -250,7 +292,6 @@ void MyFrame::MainLoop()
 	}
 }
 
-
 void MyApp::OnIdle(wxIdleEvent& event)
 {	
 	if (m_frame)
@@ -258,4 +299,3 @@ void MyApp::OnIdle(wxIdleEvent& event)
 	Sleep(10);
 	event.RequestMore();
 }
-
