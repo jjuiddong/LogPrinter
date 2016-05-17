@@ -4,8 +4,11 @@
 //	- first version
 //		- 로그 출력, error 빨강, Topmost, Clear
 //
-// - ver 1.0
+// - ver 1.01
 //		- display row line number
+//
+// - ver 1.02
+//		- display hexadecimal
 //
 //
 
@@ -51,16 +54,20 @@ public:
 	void OnContextMenu(wxContextMenuEvent& event);
 	void OnMenuToggleTopMost(wxCommandEvent& event);
 	void OnMenuToggleRowNum(wxCommandEvent& event);
+	void OnMenuToggleHexadecimal(wxCommandEvent& event);
+	void OnMenuToggleAutoscroll(wxCommandEvent& event);
 	void OnMenuClear(wxCommandEvent& event);
 
 
 private:
 	wxListCtrl *m_listCtrl;
 	std::string m_fileName;
-	int m_maxLineCount = 100; // 화면에 출력할 최대 라인 수 (실행인자 값으로 설정 가능, 두 번째 인자)
+	int m_maxLineCount = 500; // 화면에 출력할 최대 라인 수 (실행인자 값으로 설정 가능, 두 번째 인자)
 	bool m_isReload;
 	bool m_isTopMost;
 	bool m_isRowNum;
+	bool m_isHexadecimal;
+	bool m_isAutoScroll;
 	int m_rowNumber;
 	wxDECLARE_EVENT_TABLE();
 };
@@ -70,6 +77,8 @@ enum
 	Minimal_About = wxID_ABOUT,
 	MENU_TOGGLE_TOPMOST=10000,
 	MENU_TOGGLE_ROWNUM,
+	MENU_TOGGLE_HEXA,
+	MENU_TOGGLE_AUTOSCROL,
 	MENU_CLEAR,
 };
 
@@ -79,6 +88,8 @@ EVT_SIZE(MyFrame::OnSize)
 EVT_CONTEXT_MENU(MyFrame::OnContextMenu)
 EVT_MENU(MENU_TOGGLE_TOPMOST, MyFrame::OnMenuToggleTopMost)
 EVT_MENU(MENU_TOGGLE_ROWNUM, MyFrame::OnMenuToggleRowNum)
+EVT_MENU(MENU_TOGGLE_HEXA, MyFrame::OnMenuToggleHexadecimal)
+EVT_MENU(MENU_TOGGLE_AUTOSCROL, MyFrame::OnMenuToggleAutoscroll)
 EVT_MENU(MENU_CLEAR, MyFrame::OnMenuClear)
 wxEND_EVENT_TABLE()
 
@@ -108,6 +119,8 @@ MyFrame::MyFrame(const wxString& title)
 	, m_isReload(true)
 	, m_isTopMost(false)
 	, m_isRowNum(true)
+	, m_isHexadecimal(false)
+	, m_isAutoScroll(true)
 	, m_rowNumber(1)
 {
 	SetIcon(wxICON(sample));
@@ -162,9 +175,13 @@ void MyFrame::OnContextMenu(wxContextMenuEvent& event)
 	wxMenu menu;
 	menu.AppendCheckItem(MENU_TOGGLE_TOPMOST, wxT("&Toggle TopMost"));
 	menu.AppendCheckItem(MENU_TOGGLE_ROWNUM, wxT("&Toggle Row Number"));
+	menu.AppendCheckItem(MENU_TOGGLE_HEXA, wxT("&Toggle Hexadecimal"));
+	menu.AppendCheckItem(MENU_TOGGLE_AUTOSCROL, wxT("&Toggle AutoScroll"));
 	menu.AppendCheckItem(MENU_CLEAR, wxT("&Clear"));
 	menu.Check(MENU_TOGGLE_TOPMOST, m_isTopMost);
 	menu.Check(MENU_TOGGLE_ROWNUM, m_isRowNum);
+	menu.Check(MENU_TOGGLE_HEXA, m_isHexadecimal);
+	menu.Check(MENU_TOGGLE_AUTOSCROL, m_isAutoScroll);
 	PopupMenu(&menu, point);
 }
 
@@ -176,6 +193,16 @@ void MyFrame::OnMenuToggleTopMost(wxCommandEvent& event)
 void MyFrame::OnMenuToggleRowNum(wxCommandEvent& event)
 {
 	m_isRowNum = !m_isRowNum;
+}
+
+void MyFrame::OnMenuToggleHexadecimal(wxCommandEvent& event)
+{
+	m_isHexadecimal = !m_isHexadecimal;
+}
+
+void MyFrame::OnMenuToggleAutoscroll(wxCommandEvent& event)
+{
+	m_isAutoScroll = !m_isAutoScroll;
 }
 
 void MyFrame::OnMenuClear(wxCommandEvent& event)
@@ -256,7 +283,14 @@ void MyFrame::MainLoop()
 			g_oldPos = ifs.tellg();
 
  			string line;
- 			getline(ifs, line);
+			if (m_isHexadecimal)
+			{
+				// todo : display hexadecimal
+			}
+			else
+			{
+	 			getline(ifs, line);
+			}
 
 			if (ifs.eof())
 				break;
@@ -274,17 +308,20 @@ void MyFrame::MainLoop()
 				ss << line;
 
 				const string str = ss.str();
-				m_listCtrl->InsertItem(0, str);
+				const int idx = m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), str);
+				
+				if (m_isAutoScroll)
+					m_listCtrl->EnsureVisible(idx);
 				
 				const int pos1 = str.find("error");
 				const int pos2 = str.find("Error");
 				if ((pos1 != string::npos) || (pos2 != string::npos))
 				{
-					m_listCtrl->SetItemTextColour(0, wxColour(255, 0, 0));
+					m_listCtrl->SetItemTextColour(idx, wxColour(255, 0, 0));
 				}
 
 				if (m_listCtrl->GetItemCount() > m_maxLineCount)
-					m_listCtrl->DeleteItem(m_listCtrl->GetItemCount() - 1);
+					m_listCtrl->DeleteItem(0);
 			}
 		}
 
