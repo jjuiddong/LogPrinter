@@ -528,7 +528,7 @@ void MyFrame::InputFromServer()
 		return;
 
 	network::sSockBuffer packet;
-	if (m_client.m_recvQueue.Front(packet))
+	while (m_client.m_recvQueue.Front(packet))
 	{
 		stringstream ss;
 		string line;
