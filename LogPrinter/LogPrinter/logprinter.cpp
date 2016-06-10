@@ -359,7 +359,7 @@ void MyFrame::MainLoop()
 		if (m_networkInitDelay < 0)
 		{
 			m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), common::format("try connect server %s %d", m_ip.c_str(), m_port));
-			if (m_client.Init(m_ip, m_port))
+			if (m_client.Init(m_ip, m_port, 256, 256))
 			{
 				m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), "success connect");
 
@@ -385,7 +385,7 @@ void MyFrame::MainLoop()
 		if (m_outputNetworkInitDelay < 0)
 		{
 			m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), common::format("try bind server %d", m_bindPort));
-			if (m_svr.Init(m_bindPort))
+			if (m_svr.Init(m_bindPort, 256, 256))
 			{
 				m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), "success bind");
 
