@@ -10,7 +10,12 @@
 // - ver 1.02
 //		- display hexadecimal
 //
+// - ver 1.03
+//		- network send, recv
 //
+//
+
+#include "../../../Common/Common/common.h"
 
 #include "wx/wxprec.h"
 #ifndef WX_PRECOMP
@@ -19,14 +24,13 @@
 
 #include "wx/listctrl.h"
 
-#include <string>
-#include <fstream>
-#include <mmsystem.h>
-#include <sstream>
-#include <iomanip> // setw()
-using std::string;
+#include "../../../Common/Network/network.h"
 
-string g_version = "ver 1.01";
+#include <iomanip> // setw()
+
+
+
+string g_version = "ver 1.03";
 __int64 g_oldFileSize = -1;
 std::streampos g_oldPos = 0;
 
@@ -47,6 +51,8 @@ class MyFrame : public wxFrame
 public:
 	MyFrame(const wxString& title);
 	void MainLoop();
+	void InputFromFile();
+	void InputFromServer();
 	void ToggleTopMost();
 	void OnQuit(wxCommandEvent& event);
 	void OnSize(wxSizeEvent& event);
@@ -69,6 +75,17 @@ private:
 	bool m_isHexadecimal;
 	bool m_isAutoScroll;
 	int m_rowNumber;
+	int m_inputType; // 0:none, 1:file, 2:network(client)
+	int m_outputType; // 0:none, 1:network(server)
+	string m_ip;
+	int m_port;
+	int m_bindPort;
+	int m_networkState; //-1:use not network, 0:before connect or bind, 1:after connect or bind
+	int m_networkInitDelay; // 프로그램이 실행 되고 난 뒤, 몇 초후에 네트워크를 초기화할지를 나타냄. milliseconds
+	int m_outputNetworkState;//-1:use not network, 0:before connect or bind, 1:after connect or bind
+	int m_outputNetworkInitDelay; // 프로그램이 실행 되고 난 뒤, 몇 초후에 네트워크를 초기화할지를 나타냄. milliseconds
+	network::cTCPServer m_svr;
+	network::cTCPClient m_client;
 	wxDECLARE_EVENT_TABLE();
 };
 enum
@@ -122,6 +139,12 @@ MyFrame::MyFrame(const wxString& title)
 	, m_isHexadecimal(false)
 	, m_isAutoScroll(true)
 	, m_rowNumber(1)
+	, m_inputType(0)
+	, m_outputType(0)
+	, m_networkState(-1)
+	, m_outputNetworkState(-1)
+	, m_networkInitDelay(300)
+	, m_outputNetworkInitDelay(400)
 {
 	SetIcon(wxICON(sample));
 
@@ -134,16 +157,71 @@ MyFrame::MyFrame(const wxString& title)
 	m_listCtrl->InsertColumn(0, "data", 0, 480);
 	sizer->Add(m_listCtrl, wxSizerFlags().Center());
 
-	if (__argc > 1)
-	{
-		m_fileName = __argv[1];
-	}
+	// command line = "file=aaa line=100 ip=192.168.0.1 port=100 binport=1000"
+	// show command line help
+	m_listCtrl->InsertItem(0, "commandline -> file=filename.txt line=100 ip=192.168.0.1 port=100 binport=1000");
+	
+// 	if (__argc > 1)
+// 	{
+// 		m_fileName = __argv[1];
+// 	}
+// 
+// 	if (__argc > 2)
+// 	{
+// 		m_maxLineCount = atoi(__argv[2]);
+// 	}
 
-	if (__argc > 2)
-	{
-		m_maxLineCount = atoi(__argv[2]);
-	}
+	vector<string> args;
+	for (int i = 0; i < __argc; ++i)
+		args.push_back(__argv[i]);
 
+	int argIdx = 1;
+	while(__argc > argIdx)
+	{
+		const string cmd[] = {"bindport=", "file=", "line=", "ip=", "port="};
+		const int cmdSize = sizeof(cmd) / sizeof(string);
+		for (int i = 0; i < cmdSize; ++i)
+		{
+			const int pos = string(args[argIdx]).find(cmd[i]);
+			if (pos != string::npos)
+			{
+				const string param = string(args[argIdx]).substr(pos+ cmd[i].length());
+				switch (i)
+				{
+				case 0: // bindport=
+					m_outputType = 1;
+					m_bindPort = atoi(param.c_str());
+					m_outputNetworkState = 0;
+					break;
+
+				case 1: // file=
+					m_inputType = 1;
+					m_fileName = param;
+					break;
+
+				case 2: // line=
+					m_maxLineCount = atoi(param.c_str());
+					break;
+
+				case 3: // ip=
+					m_ip = param;
+					m_inputType = 2;
+					m_networkState = 0;
+					break;
+
+				case 4: // port=
+					m_port = atoi(param.c_str());
+					m_inputType = 2;
+					m_networkState = 0;
+					break;
+				}
+
+				break; // find command, and search next argument
+			}
+		}
+
+		++argIdx;
+	}
 
 	if (!m_fileName.empty())
 		SetTitle(m_fileName + " - " + g_version);
@@ -163,8 +241,8 @@ void MyFrame::ToggleTopMost()
 	if (!m_isTopMost)
 		SetWindowStyle(wxDEFAULT_FRAME_STYLE | wxSTAY_ON_TOP);
 	else
-		SetWindowStyle(wxDEFAULT_FRAME_STYLE);
-	m_isTopMost = !m_isTopMost;
+SetWindowStyle(wxDEFAULT_FRAME_STYLE);
+m_isTopMost = !m_isTopMost;
 }
 
 void MyFrame::OnContextMenu(wxContextMenuEvent& event)
@@ -187,7 +265,7 @@ void MyFrame::OnContextMenu(wxContextMenuEvent& event)
 
 void MyFrame::OnMenuToggleTopMost(wxCommandEvent& event)
 {
-	ToggleTopMost();	
+	ToggleTopMost();
 }
 
 void MyFrame::OnMenuToggleRowNum(wxCommandEvent& event)
@@ -215,7 +293,7 @@ void MyFrame::OnMenuClear(wxCommandEvent& event)
 void MyFrame::OnSize(wxSizeEvent& event)
 {
 	event.Skip();
-	m_listCtrl->SetColumnWidth(0, event.GetSize().GetWidth()-20);
+	m_listCtrl->SetColumnWidth(0, event.GetSize().GetWidth() - 20);
 }
 
 void MyFrame::OnDropFiles(wxDropFilesEvent& event)
@@ -226,9 +304,30 @@ void MyFrame::OnDropFiles(wxDropFilesEvent& event)
 		wxASSERT(dropped);
 		m_fileName = *dropped;
 		m_isReload = true;
+		m_inputType = 1;
 
 		if (!m_fileName.empty())
-			SetTitle(m_fileName + " - " + g_version);
+		{
+			std::stringstream ss;
+			if (m_outputType == 0)
+			{
+				ss << "file=" << m_fileName << " - " << g_version;
+			}
+			else
+			{
+				if (m_svr.IsConnect())
+				{
+					ss << "file=" << m_fileName << " bindport=" << m_bindPort << " - " << g_version;
+				}
+				else
+				{
+					ss << "file=" << m_fileName << " - " << g_version;
+				}
+			}
+
+			SetTitle(ss.str());
+			//SetTitle(m_fileName + " - " + g_version);
+		}
 	}
 }
 
@@ -247,16 +346,78 @@ __int64 FileSize(std::string name)
 // 파일 사이즈가 바뀌면, 파일 정보를 출력한다.
 void MyFrame::MainLoop()
 {
-	using namespace std;
-
-	if (m_fileName.empty())
-		return;
-
 	static int oldT = timeGetTime();
 	const int curT = timeGetTime();
 	if (curT - oldT < 100)
 		return;
+	const int deltaT = curT - oldT;
 	oldT = curT;
+
+	if ((m_inputType == 2) && (m_networkState == 0))// network input
+	{
+		m_networkInitDelay -= deltaT;
+		if (m_networkInitDelay < 0)
+		{
+			m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), common::format("try connect server %s %d", m_ip.c_str(), m_port));
+			if (m_client.Init(m_ip, m_port))
+			{
+				m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), "success connect");
+
+				std::stringstream ss;
+				ss << "ip=" << m_ip << " port=" << m_port << " - " << g_version;
+				SetTitle(ss.str());
+			}
+			else
+			{
+				m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), "fail connect");
+
+				std::stringstream ss;
+				ss << "Fail Connect ip=" << m_ip << " port=" << m_port << " - " << g_version;
+				SetTitle(ss.str());
+			}
+			m_networkState = 1; // network init 
+		}
+	}
+
+	if ((m_outputType == 1) && (m_outputNetworkState == 0))// network output
+	{
+		m_outputNetworkInitDelay -= deltaT;
+		if (m_outputNetworkInitDelay < 0)
+		{
+			m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), common::format("try bind server %d", m_bindPort));
+			if (m_svr.Init(m_bindPort))
+			{
+				m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), "success bind");
+
+				std::stringstream ss;
+				ss << "file=[" << m_fileName << "] bindport=" << m_bindPort << " - " << g_version;
+				SetTitle(ss.str());
+			}
+			else
+			{
+				m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), "fail bind");
+
+				std::stringstream ss;
+				ss << "file=[" << m_fileName << "] fail bindport=" << m_bindPort << " - " << g_version;
+				SetTitle(ss.str());
+			}
+			m_outputNetworkState = 1; // network init 
+		}
+	}
+
+	switch (m_inputType)
+	{
+	case 0: break;
+	case 1: InputFromFile(); break;
+	case 2: InputFromServer(); break;
+	default: assert(0); break;
+	}
+}
+
+
+void MyFrame::InputFromFile()
+{
+	using namespace std;
 
 	const __int64 curSize = FileSize(m_fileName);
 	if (curSize <= 0)
@@ -265,8 +426,8 @@ void MyFrame::MainLoop()
 	if (m_isReload || (curSize != g_oldFileSize))
 	{
 		ifstream ifs(m_fileName);
- 		if (!ifs.is_open())
- 			return;
+		if (!ifs.is_open())
+			return;
 
 		if (m_isReload || (curSize < g_oldFileSize))
 		{
@@ -282,17 +443,33 @@ void MyFrame::MainLoop()
 		{
 			g_oldPos = ifs.tellg();
 
- 			string line;
+			string line;
 			if (m_isHexadecimal)
 			{
-				// todo : display hexadecimal
+				char buffer[64];
+				ZeroMemory(buffer, sizeof(buffer));
+				ifs.read(buffer, sizeof(buffer) - 1);
+
+				stringstream ss;
+				int i = 0;
+				while (1)
+				{
+					if (!buffer[i])
+						break;
+					ss << std::setw(2) << std::hex << (int)buffer[i];
+					++i;
+				}
+
+				g_oldPos += i;
+
+				line = ss.str();
 			}
 			else
 			{
-	 			getline(ifs, line);
+				getline(ifs, line);
 			}
 
-			if (ifs.eof())
+			if (!m_isHexadecimal && ifs.eof())
 				break;
 
 			if (!line.empty() && (line != "\r"))
@@ -309,10 +486,19 @@ void MyFrame::MainLoop()
 
 				const string str = ss.str();
 				const int idx = m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), str);
-				
+
+				if (m_outputType == 1) // send network
+				{
+					if (m_svr.IsConnect())
+					{
+						m_svr.m_sendQueue.Push(0, (BYTE*)line.c_str(), line.length());
+						m_svr.m_sendQueue.SendBroadcast(m_svr.m_sessions);
+					}
+				}
+
 				if (m_isAutoScroll)
 					m_listCtrl->EnsureVisible(idx);
-				
+
 				const int pos1 = str.find("error");
 				const int pos2 = str.find("Error");
 				if ((pos1 != string::npos) || (pos2 != string::npos))
@@ -323,11 +509,60 @@ void MyFrame::MainLoop()
 				if (m_listCtrl->GetItemCount() > m_maxLineCount)
 					m_listCtrl->DeleteItem(0);
 			}
+
+			if (m_isHexadecimal)
+				break;
 		}
 
 		g_oldFileSize = curSize;
 	}
+
 }
+
+
+void MyFrame::InputFromServer()
+{
+	using namespace std;
+
+	if (!m_client.IsConnect())
+		return;
+
+	network::sSockBuffer packet;
+	if (m_client.m_recvQueue.Front(packet))
+	{
+		stringstream ss;
+		string line;
+		for (int i = 0; i < packet.actualLen; ++i)
+			line += (char)packet.buffer[i];
+
+		if (m_isRowNum)
+		{
+			ss << std::setw(5) << m_rowNumber << "    ";
+			++m_rowNumber;
+		}
+
+		ss << line;
+
+		const string str = ss.str();
+		const int idx = m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), str);
+
+		if (m_isAutoScroll)
+			m_listCtrl->EnsureVisible(idx);
+
+		const int pos1 = str.find("error");
+		const int pos2 = str.find("Error");
+		if ((pos1 != string::npos) || (pos2 != string::npos))
+		{
+			m_listCtrl->SetItemTextColour(idx, wxColour(255, 0, 0));
+		}
+
+		if (m_listCtrl->GetItemCount() > m_maxLineCount)
+			m_listCtrl->DeleteItem(0);
+
+		m_client.m_recvQueue.Pop();
+	}	
+}
+
 
 void MyApp::OnIdle(wxIdleEvent& event)
 {	
