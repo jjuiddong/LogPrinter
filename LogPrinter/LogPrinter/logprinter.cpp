@@ -515,7 +515,7 @@ void MyFrame::InputFromFile()
 				{
 					if (m_svr.IsConnect())
 					{
-						m_svr.m_sendQueue.Push(0, "LOGS", (const BYTE*)line.c_str(), line.size());
+						m_svr.m_sendQueue.Push(0, &network::cProtocol("LOGS"), (const BYTE*)line.c_str(), line.size());
 						m_svr.m_sendQueue.SendBroadcast(m_svr.m_sessions);
 					}
 				}
