@@ -14,6 +14,9 @@
 //		- network send, recv
 //
 // - ver 1.04
+//		- optimize & refactoring
+//		- maximum line = 500 -> 100
+//		- stop menu
 //		- logprinter_config.txt
 //		- token = color
 //			- logprinter_config.txt Sample
@@ -21,7 +24,6 @@
 //				Error = 1, 0, 0
 //				Recv = 0, 1, 0
 //
-
 #include "../../../Common/Common/common.h"
 
 #include "wx/wxprec.h"
@@ -69,32 +71,41 @@ public:
 	void OnMenuToggleRowNum(wxCommandEvent& event);
 	void OnMenuToggleHexadecimal(wxCommandEvent& event);
 	void OnMenuToggleAutoscroll(wxCommandEvent& event);
+	void OnMenuToggleStop(wxCommandEvent& event);
 	void OnMenuClear(wxCommandEvent& event);
 
 protected:
-	void InsertString(const string &str);
+	void InsertString(const common::Str512 &str);
 
 private:
 	wxListCtrl *m_listCtrl;
 	string m_fileName;
-	int m_maxLineCount = 500; // 화면에 출력할 최대 라인 수 (실행인자 값으로 설정 가능, 두 번째 인자)
+	int m_maxLineCount = 100; // 화면에 출력할 최대 라인 수 (실행인자 값으로 설정 가능, 두 번째 인자)
 	bool m_isReload;
 	bool m_isTopMost;
 	bool m_isRowNum;
 	bool m_isHexadecimal;
 	bool m_isAutoScroll;
+	bool m_isStop;
 	int m_rowNumber;
-	int m_inputType; // 0:none, 1:file, 2:network(client)
-	int m_outputType; // 0:none, 1:network(server)
+
+	struct eInputType {
+		enum Enum {
+			I_NONE, I_FILE, I_NETWORK
+		};
+	};
+	eInputType::Enum m_inputType;
+	eInputType::Enum m_outputType;
 	string m_ip;
 	int m_port;
 	int m_bindPort;
 	int m_networkState; //-1:use not network, 0:before connect or bind, 1:after connect or bind
-	int m_networkInitDelay; // 프로그램이 실행 되고 난 뒤, 몇 초후에 네트워크를 초기화할지를 나타냄. milliseconds
 	int m_outputNetworkState;//-1:use not network, 0:before connect or bind, 1:after connect or bind
-	int m_outputNetworkInitDelay; // 프로그램이 실행 되고 난 뒤, 몇 초후에 네트워크를 초기화할지를 나타냄. milliseconds
+	double m_networkInitDelay; // 프로그램이 실행 되고 난 뒤, 몇 초후에 네트워크를 초기화할지를 나타냄. seconds
+	double m_outputNetworkInitDelay; // 프로그램이 실행 되고 난 뒤, 몇 초 후에 네트워크를 초기화할지를 나타냄. seconds
 	network::cTCPServer m_svr;
-	network::cTCPClient m_client;
+	network::cTCPClient2 m_client;
+	common::cTimer m_timer;
 	struct sTextColor {
 		string text;
 		wxColour color;
@@ -111,6 +122,7 @@ enum
 	MENU_TOGGLE_ROWNUM,
 	MENU_TOGGLE_HEXA,
 	MENU_TOGGLE_AUTOSCROL,
+	MENU_TOGGLE_STOP,
 	MENU_CLEAR,
 };
 
@@ -122,6 +134,7 @@ EVT_MENU(MENU_TOGGLE_TOPMOST, MyFrame::OnMenuToggleTopMost)
 EVT_MENU(MENU_TOGGLE_ROWNUM, MyFrame::OnMenuToggleRowNum)
 EVT_MENU(MENU_TOGGLE_HEXA, MyFrame::OnMenuToggleHexadecimal)
 EVT_MENU(MENU_TOGGLE_AUTOSCROL, MyFrame::OnMenuToggleAutoscroll)
+EVT_MENU(MENU_TOGGLE_STOP, MyFrame::OnMenuToggleStop)
 EVT_MENU(MENU_CLEAR, MyFrame::OnMenuClear)
 wxEND_EVENT_TABLE()
 
@@ -153,15 +166,18 @@ MyFrame::MyFrame(const wxString& title)
 	, m_isRowNum(true)
 	, m_isHexadecimal(false)
 	, m_isAutoScroll(true)
+	, m_isStop(false)
 	, m_rowNumber(1)
-	, m_inputType(0)
-	, m_outputType(0)
+	, m_inputType(eInputType::I_NONE)
+	, m_outputType(eInputType::I_NONE)
 	, m_networkState(-1)
 	, m_outputNetworkState(-1)
-	, m_networkInitDelay(300)
-	, m_outputNetworkInitDelay(400)
+	, m_networkInitDelay(0.3f)
+	, m_outputNetworkInitDelay(0.4f)
 {
 	SetIcon(wxICON(sample));
+
+	m_timer.Create();
 
 	wxFont listfont(11, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD);
 	wxSizer* sizer = new wxBoxSizer(wxHORIZONTAL);
@@ -176,7 +192,6 @@ MyFrame::MyFrame(const wxString& title)
 	// show command line help
 	m_listCtrl->InsertItem(0, "commandline -> file=filename.txt line=100 ip=192.168.0.1 port=100 binport=1000");
 	m_listCtrl->InsertItem(1, "logprinter_config.txt, string = color");
-
 // 	if (__argc > 1)
 // 	{
 // 		m_fileName = __argv[1];
@@ -205,13 +220,13 @@ MyFrame::MyFrame(const wxString& title)
 				switch (i)
 				{
 				case 0: // bindport=
-					m_outputType = 1;
+					m_outputType = eInputType::I_NETWORK;
 					m_bindPort = atoi(param.c_str());
 					m_outputNetworkState = 0;
 					break;
 
 				case 1: // file=
-					m_inputType = 1;
+					m_inputType = eInputType::I_FILE;
 					m_fileName = param;
 					break;
 
@@ -221,13 +236,13 @@ MyFrame::MyFrame(const wxString& title)
 
 				case 3: // ip=
 					m_ip = param;
-					m_inputType = 2;
+					m_inputType = eInputType::I_NETWORK;
 					m_networkState = 0;
 					break;
 
 				case 4: // port=
 					m_port = atoi(param.c_str());
-					m_inputType = 2;
+					m_inputType = eInputType::I_NETWORK;
 					m_networkState = 0;
 					break;
 				}
@@ -299,11 +314,13 @@ void MyFrame::OnContextMenu(wxContextMenuEvent& event)
 	menu.AppendCheckItem(MENU_TOGGLE_ROWNUM, wxT("&Toggle Row Number"));
 	menu.AppendCheckItem(MENU_TOGGLE_HEXA, wxT("&Toggle Hexadecimal"));
 	menu.AppendCheckItem(MENU_TOGGLE_AUTOSCROL, wxT("&Toggle AutoScroll"));
+	menu.AppendCheckItem(MENU_TOGGLE_STOP, wxT("&Stop"));
 	menu.AppendCheckItem(MENU_CLEAR, wxT("&Clear"));
 	menu.Check(MENU_TOGGLE_TOPMOST, m_isTopMost);
 	menu.Check(MENU_TOGGLE_ROWNUM, m_isRowNum);
 	menu.Check(MENU_TOGGLE_HEXA, m_isHexadecimal);
 	menu.Check(MENU_TOGGLE_AUTOSCROL, m_isAutoScroll);
+	menu.Check(MENU_TOGGLE_STOP, m_isStop);
 	PopupMenu(&menu, point);
 }
 
@@ -327,6 +344,11 @@ void MyFrame::OnMenuToggleAutoscroll(wxCommandEvent& event)
 	m_isAutoScroll = !m_isAutoScroll;
 }
 
+void MyFrame::OnMenuToggleStop(wxCommandEvent& event)
+{
+	m_isStop = !m_isStop;
+}
+
 void MyFrame::OnMenuClear(wxCommandEvent& event)
 {
 	if (m_listCtrl)
@@ -348,12 +370,12 @@ void MyFrame::OnDropFiles(wxDropFilesEvent& event)
 		wxASSERT(dropped);
 		m_fileName = *dropped;
 		m_isReload = true;
-		m_inputType = 1;
+		m_inputType = eInputType::I_FILE;
 
 		if (!m_fileName.empty())
 		{
 			std::stringstream ss;
-			if (m_outputType == 0)
+			if (m_outputType == eInputType::I_NONE)
 			{
 				ss << "file=" << m_fileName << " - " << g_version;
 			}
@@ -390,19 +412,23 @@ __int64 FileSize(std::string name)
 // 파일 사이즈가 바뀌면, 파일 정보를 출력한다.
 void MyFrame::MainLoop()
 {
-	static int oldT = timeGetTime();
-	const int curT = timeGetTime();
-	if (curT - oldT < 100)
+	static double oldT = m_timer.GetSeconds();
+	const double curT = m_timer.GetSeconds();
+	const double deltaT = curT - oldT;
+	if (deltaT < 0.1f)
 		return;
-	const int deltaT = curT - oldT;
 	oldT = curT;
 
-	if ((m_inputType == 2) && (m_networkState == 0))// network input
+	if (m_isStop)
+		return;
+
+	if ((m_inputType == eInputType::I_NETWORK) && (m_networkState == 0))// network input
 	{
 		m_networkInitDelay -= deltaT;
 		if (m_networkInitDelay < 0)
 		{
-			m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), common::format("try connect server %s %d", m_ip.c_str(), m_port));
+			m_listCtrl->InsertItem(m_listCtrl->GetItemCount()
+				, common::format("try connect server %s %d", m_ip.c_str(), m_port));
 			if (m_client.Init(m_ip, m_port, 256, 256))
 			{
 				m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), "success connect");
@@ -423,12 +449,13 @@ void MyFrame::MainLoop()
 		}
 	}
 
-	if ((m_outputType == 1) && (m_outputNetworkState == 0))// network output
+	if ((m_outputType == eInputType::I_NETWORK) && (m_outputNetworkState == 0))// network output
 	{
 		m_outputNetworkInitDelay -= deltaT;
 		if (m_outputNetworkInitDelay < 0)
 		{
-			m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), common::format("try bind server %d", m_bindPort));
+			m_listCtrl->InsertItem(m_listCtrl->GetItemCount()
+				, common::format("try bind server %d", m_bindPort));
 			if (m_svr.Init(m_bindPort, 256, 256))
 			{
 				m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), "success bind");
@@ -451,9 +478,9 @@ void MyFrame::MainLoop()
 
 	switch (m_inputType)
 	{
-	case 0: break;
-	case 1: InputFromFile(); break;
-	case 2: InputFromServer(); break;
+	case eInputType::I_NONE: break;
+	case eInputType::I_FILE: InputFromFile(); break;
+	case eInputType::I_NETWORK: InputFromServer(); break;
 	default: assert(0); break;
 	}
 }
@@ -487,30 +514,31 @@ void MyFrame::InputFromFile()
 		{
 			g_oldPos = ifs.tellg();
 
-			string line;
+			common::Str512 line;
 			if (m_isHexadecimal)
 			{
 				char buffer[64];
 				ZeroMemory(buffer, sizeof(buffer));
 				ifs.read(buffer, sizeof(buffer) - 1);
 
-				stringstream ss;
 				int i = 0;
 				while (1)
 				{
 					if (!buffer[i])
 						break;
-					ss << std::setw(2) << std::hex << (int)buffer[i];
+
+					char hex[3] = { NULL, NULL, NULL };
+					sprintf_s(hex, "%2X", buffer[i]);
+					line.m_str[i * 2] = hex[0];
+					line.m_str[i * 2 + 1] = hex[1];
 					++i;
 				}
 
 				g_oldPos += i;
-
-				line = ss.str();
 			}
 			else
 			{
-				getline(ifs, line);
+				ifs.getline(line.m_str, line.SIZE);
 			}
 
 			if (!m_isHexadecimal && ifs.eof())
@@ -518,24 +546,26 @@ void MyFrame::InputFromFile()
 
 			if (!line.empty() && (line != "\r"))
 			{
-				stringstream ss;
+				common::Str512 showText;
 
 				if (m_isRowNum)
 				{
-					ss << std::setw(5) << m_rowNumber << "    ";
+					sprintf_s(showText.m_str, "%5d: ", m_rowNumber);
 					++m_rowNumber;
 				}
 
-				ss << line;
+				// 파일이 너무크면, 화면에 모두 출력하지 않는다. lineNumber는 증가시킨다.
+				if (curSize - g_oldPos > 3000)
+					continue;
 
-				const string str = ss.str();
-				InsertString(str);
+				showText += line;
+				InsertString(showText);
 
-				if (m_outputType == 1) // send network
+				if (m_outputType == eInputType::I_NETWORK) // send network
 				{
 					if (m_svr.IsConnect())
 					{
-						m_svr.m_sendQueue.Push(0, m_svr.m_protocol, (BYTE*)line.c_str(), line.length());
+						m_svr.m_sendQueue.Push(0, &network::cProtocol("LOGS"), (const BYTE*)line.c_str(), line.size());
 						m_svr.m_sendQueue.SendBroadcast(m_svr.m_sessions);
 					}
 				}
@@ -547,7 +577,6 @@ void MyFrame::InputFromFile()
 
 		g_oldFileSize = curSize;
 	}
-
 }
 
 
@@ -561,21 +590,20 @@ void MyFrame::InputFromServer()
 	network::sSockBuffer packet;
 	while (m_client.m_recvQueue.Front(packet))
 	{
-		stringstream ss;
+		common::Str512 showText;
+
 		string line;
 		for (int i = 0; i < packet.actualLen; ++i)
 			line += (char)packet.buffer[i];
 
 		if (m_isRowNum)
 		{
-			ss << std::setw(5) << m_rowNumber << "    ";
+			sprintf_s(showText.m_str, "%5d: ", m_rowNumber);
 			++m_rowNumber;
 		}
 
-		ss << line;
-
-		const string str = ss.str();
-		InsertString(str);
+		showText += line;
+		InsertString(showText);
 
 		m_client.m_recvQueue.Pop();
 	}	
@@ -583,9 +611,9 @@ void MyFrame::InputFromServer()
 
 
 // Insert String to ListCtrl
-void MyFrame::InsertString(const string &str)
+void MyFrame::InsertString(const common::Str512 &str)
 {
-	const int idx = m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), str);
+	const int idx = m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), str.c_str());
 
 	if (m_isAutoScroll)
 		m_listCtrl->EnsureVisible(idx);
@@ -593,7 +621,7 @@ void MyFrame::InsertString(const string &str)
 	wxColour color(255, 255, 255);
 	for (auto &c : m_colors)
 	{
-		if (str.find(c.text) != string::npos)
+		if (str.find(c.text.c_str()))
 		{
 			color = c.color;
 			break;
