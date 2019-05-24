@@ -34,7 +34,7 @@
 
 
 
-string g_version = "ver 1.04";
+string g_version = "ver 1.05";
 __int64 g_oldFileSize = -1;
 std::streampos g_oldPos = 0;
 
@@ -161,6 +161,7 @@ MyFrame::MyFrame(const wxString& title)
 	, m_outputNetworkState(-1)
 	, m_networkInitDelay(0.3f)
 	, m_outputNetworkInitDelay(0.4f)
+	, m_svr(new network::cProtocol("LOGS"))
 {
 	SetIcon(wxICON(sample));
 
@@ -175,9 +176,9 @@ MyFrame::MyFrame(const wxString& title)
 	m_listCtrl->InsertColumn(0, "data", 0, 480);
 	sizer->Add(m_listCtrl, wxSizerFlags().Center());
 
-	// command line = "file=aaa line=100 ip=192.168.0.1 port=100 binport=1000"
+	// command line = "file=aaa line=100 ip=192.168.0.1 port=100 binport=1000 oplog"
 	// show command line help
-	m_listCtrl->InsertItem(0, "commandline -> file=filename.txt line=100 ip=192.168.0.1 port=100 binport=1000");
+	m_listCtrl->InsertItem(0, "commandline -> file=filename.txt line=100 ip=192.168.0.1 port=100 binport=1000 oplog");
 
 	vector<string> args;
 	for (int i = 0; i < __argc; ++i)
@@ -186,7 +187,7 @@ MyFrame::MyFrame(const wxString& title)
 	int argIdx = 1;
 	while(__argc > argIdx)
 	{
-		const string cmd[] = {"bindport=", "file=", "line=", "ip=", "port="};
+		const string cmd[] = {"bindport=", "file=", "line=", "ip=", "port=", "oplog"};
 		const int cmdSize = sizeof(cmd) / sizeof(string);
 		for (int i = 0; i < cmdSize; ++i)
 		{
@@ -222,6 +223,17 @@ MyFrame::MyFrame(const wxString& title)
 					m_inputType = eInputType::I_NETWORK;
 					m_networkState = 0;
 					break;
+
+				case 5: // oplog
+				{
+					// yyymmdd_AMROperation.txt
+					m_inputType = eInputType::I_FILE;
+					m_fileName = common::GetCurrentDateTime4() + "_AMROperation.log";
+					stringstream ss;
+					ss << "oplog = " << m_fileName;
+					m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), ss.str().c_str());
+				}
+				break;
 				}
 
 				break; // find command, and search next argument
@@ -515,7 +527,7 @@ void MyFrame::InputFromFile()
 				{
 					if (m_svr.IsConnect())
 					{
-						m_svr.m_sendQueue.Push(0, "LOGS", (const BYTE*)line.c_str(), line.size());
+						m_svr.m_sendQueue.Push(0, m_svr.m_protocol, (const BYTE*)line.c_str(), line.size());
 						m_svr.m_sendQueue.SendBroadcast(m_svr.m_sessions);
 					}
 				}
