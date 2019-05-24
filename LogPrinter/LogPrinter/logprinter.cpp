@@ -17,8 +17,13 @@
 //		- optimize & refactoring
 //		- maximum line = 500 -> 100
 //		- stop menu
+//		- logprinter_config.txt
+//		- token = color
+//			- logprinter_config.txt Sample
+//				error = 1, 0, 0
+//				Error = 1, 0, 0
+//				Recv = 0, 1, 0
 //
-
 #include "../../../Common/Common/common.h"
 
 #include "wx/wxprec.h"
@@ -69,10 +74,12 @@ public:
 	void OnMenuToggleStop(wxCommandEvent& event);
 	void OnMenuClear(wxCommandEvent& event);
 
+protected:
+	void InsertString(const common::Str512 &str);
 
 private:
 	wxListCtrl *m_listCtrl;
-	std::string m_fileName;
+	string m_fileName;
 	int m_maxLineCount = 100; // 화면에 출력할 최대 라인 수 (실행인자 값으로 설정 가능, 두 번째 인자)
 	bool m_isReload;
 	bool m_isTopMost;
@@ -99,8 +106,14 @@ private:
 	network::cTCPServer m_svr;
 	network::cTCPClient2 m_client;
 	common::cTimer m_timer;
+	struct sTextColor {
+		string text;
+		wxColour color;
+	};
+	vector<sTextColor> m_colors;
 	wxDECLARE_EVENT_TABLE();
 };
+
 enum
 {
 	Minimal_Quit = wxID_EXIT,
@@ -179,6 +192,7 @@ MyFrame::MyFrame(const wxString& title)
 	// command line = "file=aaa line=100 ip=192.168.0.1 port=100 binport=1000 oplog"
 	// show command line help
 	m_listCtrl->InsertItem(0, "commandline -> file=filename.txt line=100 ip=192.168.0.1 port=100 binport=1000 oplog");
+	m_listCtrl->InsertItem(1, "logprinter_config.txt, string = color");
 
 	vector<string> args;
 	for (int i = 0; i < __argc; ++i)
@@ -216,6 +230,7 @@ MyFrame::MyFrame(const wxString& title)
 					m_ip = param;
 					m_inputType = eInputType::I_NETWORK;
 					m_networkState = 0;
+					m_client.m_state = network::cTCPClient2::READYCONNECT;
 					break;
 
 				case 4: // port=
@@ -245,6 +260,34 @@ MyFrame::MyFrame(const wxString& title)
 
 	if (!m_fileName.empty())
 		SetTitle(m_fileName + " - " + g_version);
+
+	// read logprinter_config.txt to load text:color
+	common::cConfig config("logprinter_config.txt");
+	for (auto &option : config.m_options)
+	{
+		sTextColor tColor;
+		const common::Vector3 color = config.GetVector3(option.first);
+
+		tColor.text = option.first;
+		tColor.color = wxColour((unsigned char)(color.x * 255)
+			, (unsigned char)(color.y * 255)
+			, (unsigned char)(color.z * 255)
+		);
+		m_colors.push_back(tColor);
+	}
+
+	// default color
+	if (m_colors.empty())
+	{
+		sTextColor tColor;
+		tColor.text = "error";
+		tColor.color = wxColour(255, 0, 0);
+		m_colors.push_back(tColor);
+
+		tColor.text = "Error";
+		tColor.color = wxColour(255, 0, 0);
+		m_colors.push_back(tColor);
+	}
 
 	DragAcceptFiles(true);
 	Connect(wxEVT_DROP_FILES, wxDropFilesEventHandler(MyFrame::OnDropFiles), NULL, this);
@@ -520,8 +563,7 @@ void MyFrame::InputFromFile()
 					continue;
 
 				showText += line;
-
-				const int idx = m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), showText.c_str());
+				InsertString(showText);
 
 				if (m_outputType == eInputType::I_NETWORK) // send network
 				{
@@ -531,19 +573,6 @@ void MyFrame::InputFromFile()
 						m_svr.m_sendQueue.SendBroadcast(m_svr.m_sessions);
 					}
 				}
-
-				if (m_isAutoScroll)
-					m_listCtrl->EnsureVisible(idx);
-
-				const char *pos1 = showText.find("error");
-				const char *pos2 = showText.find("Error");
-				if (pos1 || pos2)
-				{
-					m_listCtrl->SetItemTextColour(idx, wxColour(255, 0, 0));
-				}
-
-				if (m_listCtrl->GetItemCount() > m_maxLineCount)
-					m_listCtrl->DeleteItem(0);
 			}
 
 			if (m_isHexadecimal)
@@ -559,43 +588,62 @@ void MyFrame::InputFromServer()
 {
 	using namespace std;
 
-	if (!m_client.IsConnect())
+	if (!m_client.IsReadyConnect() && !m_client.IsConnect())
+	{
+		static bool showError = false;
+		if (!showError)
+		{
+			InsertString("Client Disconnect");
+			showError = true;
+		}
 		return;
+	}
 
 	network::sSockBuffer packet;
 	while (m_client.m_recvQueue.Front(packet))
 	{
-		stringstream ss;
+		common::Str512 showText;
+
 		string line;
 		for (int i = 0; i < packet.actualLen; ++i)
 			line += (char)packet.buffer[i];
 
 		if (m_isRowNum)
 		{
-			ss << std::setw(5) << m_rowNumber << "    ";
+			sprintf_s(showText.m_str, "%5d: ", m_rowNumber);
 			++m_rowNumber;
 		}
 
-		ss << line;
-
-		const string str = ss.str();
-		const int idx = m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), str);
-
-		if (m_isAutoScroll)
-			m_listCtrl->EnsureVisible(idx);
-
-		const int pos1 = str.find("error");
-		const int pos2 = str.find("Error");
-		if ((pos1 != string::npos) || (pos2 != string::npos))
-		{
-			m_listCtrl->SetItemTextColour(idx, wxColour(255, 0, 0));
-		}
-
-		if (m_listCtrl->GetItemCount() > m_maxLineCount)
-			m_listCtrl->DeleteItem(0);
+		showText += line;
+		InsertString(showText);
 
 		m_client.m_recvQueue.Pop();
 	}	
+}
+
+
+// Insert String to ListCtrl
+void MyFrame::InsertString(const common::Str512 &str)
+{
+	const int idx = m_listCtrl->InsertItem(m_listCtrl->GetItemCount(), str.c_str());
+
+	if (m_isAutoScroll)
+		m_listCtrl->EnsureVisible(idx);
+
+	wxColour color(255, 255, 255);
+	for (auto &c : m_colors)
+	{
+		if (str.find(c.text.c_str()))
+		{
+			color = c.color;
+			break;
+		}
+	}
+
+	m_listCtrl->SetItemTextColour(idx, color);
+
+	if (m_listCtrl->GetItemCount() > m_maxLineCount)
+		m_listCtrl->DeleteItem(0);
 }
 
 
