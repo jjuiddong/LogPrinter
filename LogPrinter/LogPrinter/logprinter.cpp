@@ -2,7 +2,7 @@
 // 2016-05-13, jjuiddong
 // 
 //	- first version
-//		- 로그 출력, error 빨강, Topmost, Clear
+//		- print log, error Red color, TopMost, Clear
 //
 // - ver 1.01
 //		- display row line number
@@ -18,31 +18,29 @@
 //		- maximum line = 500 -> 100
 //		- stop menu
 //		- logprinter_config.txt
-//		- token = color
-//			- logprinter_config.txt Sample
-//				error = 1, 0, 0
-//				Error = 1, 0, 0
-//				Recv = 0, 1, 0
+//			- token = color
+//				- logprinter_config.txt Sample
+//					error = 1, 0, 0
+//					Error = 1, 0, 0
+//					Recv = 0, 1, 0
+//
+// - ver 1.06, 2021-07-27
+//	- ver 1.05 skip
+//	- string missing bug fix
+//
 //
 #include "../../../Common/Common/common.h"
-
 #include "wx/wxprec.h"
 #ifndef WX_PRECOMP
 #include "wx/wx.h"
 #endif
-
 #include "wx/listctrl.h"
-
 #include "../../../Common/Network/network.h"
-
 #include <iomanip> // setw()
 
-
-
-string g_version = "ver 1.05";
+string g_version = "ver 1.06";
 __int64 g_oldFileSize = -1;
 std::streampos g_oldPos = 0;
-
 
 #pragma comment (lib, "winmm.lib")
 
@@ -60,9 +58,6 @@ class MyFrame : public wxFrame
 public:
 	MyFrame(const wxString& title);
 	void MainLoop();
-	void InputFromFile();
-	void InputFromServer();
-	void ToggleTopMost();
 	void OnQuit(wxCommandEvent& event);
 	void OnSize(wxSizeEvent& event);
 	void OnDropFiles(wxDropFilesEvent& event);
@@ -74,8 +69,15 @@ public:
 	void OnMenuToggleStop(wxCommandEvent& event);
 	void OnMenuClear(wxCommandEvent& event);
 
+
 protected:
+	void InputFromFile();
+	void InputFromServer();
+	void ToggleTopMost();
+	void SplitString(OUT vector<string> &out);
+	void OutputString(const common::Str512 &str);
 	void InsertString(const common::Str512 &str);
+
 
 private:
 	wxListCtrl *m_listCtrl;
@@ -103,6 +105,9 @@ private:
 	int m_outputNetworkState;//-1:use not network, 0:before connect or bind, 1:after connect or bind
 	double m_networkInitDelay; // 프로그램이 실행 되고 난 뒤, 몇 초후에 네트워크를 초기화할지를 나타냄. seconds
 	double m_outputNetworkInitDelay; // 프로그램이 실행 되고 난 뒤, 몇 초 후에 네트워크를 초기화할지를 나타냄. seconds
+	char *m_buffer;
+	int m_bufferSize;
+	int m_curPos; // current buffer pos(index)
 	network::cTCPServer m_svr;
 	network::cTCPClient2 m_client;
 	common::cTimer m_timer;
@@ -175,6 +180,9 @@ MyFrame::MyFrame(const wxString& title)
 	, m_networkInitDelay(0.3f)
 	, m_outputNetworkInitDelay(0.4f)
 	, m_svr(new network::cProtocol("LOGS"))
+	, m_buffer(nullptr)
+	, m_bufferSize(2048)
+	, m_curPos(0)
 {
 	SetIcon(wxICON(sample));
 
@@ -289,6 +297,8 @@ MyFrame::MyFrame(const wxString& title)
 		m_colors.push_back(tColor);
 	}
 
+	m_buffer = new char[m_bufferSize];	
+
 	DragAcceptFiles(true);
 	Connect(wxEVT_DROP_FILES, wxDropFilesEventHandler(MyFrame::OnDropFiles), NULL, this);
 }
@@ -296,6 +306,7 @@ MyFrame::MyFrame(const wxString& title)
 void MyFrame::OnQuit(wxCommandEvent& WXUNUSED(event))
 {
 	Close(true);
+	SAFE_DELETE(m_buffer);
 }
 
 
@@ -304,8 +315,8 @@ void MyFrame::ToggleTopMost()
 	if (!m_isTopMost)
 		SetWindowStyle(wxDEFAULT_FRAME_STYLE | wxSTAY_ON_TOP);
 	else
-SetWindowStyle(wxDEFAULT_FRAME_STYLE);
-m_isTopMost = !m_isTopMost;
+		SetWindowStyle(wxDEFAULT_FRAME_STYLE);
+	m_isTopMost = !m_isTopMost;
 }
 
 void MyFrame::OnContextMenu(wxContextMenuEvent& event)
@@ -490,6 +501,7 @@ void MyFrame::MainLoop()
 }
 
 
+// input from file
 void MyFrame::InputFromFile()
 {
 	using namespace std;
@@ -498,92 +510,166 @@ void MyFrame::InputFromFile()
 	if (curSize <= 0)
 		return;
 
-	if (m_isReload || (curSize != g_oldFileSize))
-	{
-		ifstream ifs(m_fileName);
-		if (!ifs.is_open())
-			return;
+	if (!m_isReload && (curSize == g_oldFileSize))
+		return; // nothing to do
 
-		if (m_isReload || (curSize < g_oldFileSize))
+	ifstream ifs(m_fileName, ios::binary);
+	if (!ifs.is_open())
+		return;
+
+	if (m_isReload || (curSize < g_oldFileSize))
+	{
+		g_oldPos = ifs.tellg();
+		m_isReload = false;
+	}
+	else
+	{
+		ifs.seekg(g_oldPos, std::ios::beg);
+	}
+
+	while (1)
+	{
+		g_oldPos = ifs.tellg();
+
+		common::Str512 line;
+		if (m_isHexadecimal)
 		{
-			g_oldPos = ifs.tellg();
-			m_isReload = false;
+			char buffer[64];
+			ZeroMemory(buffer, sizeof(buffer));
+			ifs.read(buffer, sizeof(buffer) - 1);
+
+			int i = 0;
+			while (1)
+			{
+				if (!buffer[i])
+					break;
+
+				char hex[3] = { NULL, NULL, NULL };
+				sprintf_s(hex, "%2X", buffer[i]);
+				line.m_str[i * 2] = hex[0];
+				line.m_str[i * 2 + 1] = hex[1];
+				++i;
+			}
+
+			// todo: all hexacode parsing
+			OutputString(line);
+
+			g_oldPos += i;
 		}
 		else
 		{
-			ifs.seekg(g_oldPos, std::ios::beg);
+			const int remainSize = m_bufferSize - m_curPos;
+			const __int64 oldFileSize = max((__int64)0, g_oldFileSize);
+			const int cpySize = (int)min((__int64)remainSize, curSize - oldFileSize);
+			if (cpySize <= 0)
+				break;
+
+			ifs.read(m_buffer + m_curPos, cpySize);
+			const size_t extracted = ifs.gcount(); // actual read byte size
+			g_oldPos = ifs.tellg(); // update current file pos
+			m_curPos += extracted;
+			g_oldFileSize = oldFileSize + extracted;
+
+			vector<string> strs;
+			SplitString(strs);
+			for (auto &str : strs)
+				OutputString(str);
+			if (strs.empty() || (0 == extracted))
+				break;
 		}
 
-		while (1)
+		if (!m_isHexadecimal && ifs.eof())
+			break;
+		if (m_isHexadecimal)
+			break;
+	}
+
+	g_oldFileSize = curSize;	
+}
+
+
+// output string to listctrl
+void MyFrame::OutputString(const common::Str512 &line)
+{
+	if (line.empty() || (line == "\r"))
+		return;
+
+	common::Str512 showText;
+
+	if (m_isRowNum)
+	{
+		sprintf_s(showText.m_str, "%5d: ", m_rowNumber);
+		++m_rowNumber;
+	}
+
+	// 파일이 너무크면, 화면에 모두 출력하지 않는다. lineNumber는 증가시킨다.
+	//if (curSize - g_oldPos > 3000)
+	//	continue;
+
+	showText += line;
+	InsertString(showText);
+
+	if (m_outputType == eInputType::I_NETWORK) // send network
+	{
+		if (m_svr.IsConnect())
 		{
-			g_oldPos = ifs.tellg();
-
-			common::Str512 line;
-			if (m_isHexadecimal)
-			{
-				char buffer[64];
-				ZeroMemory(buffer, sizeof(buffer));
-				ifs.read(buffer, sizeof(buffer) - 1);
-
-				int i = 0;
-				while (1)
-				{
-					if (!buffer[i])
-						break;
-
-					char hex[3] = { NULL, NULL, NULL };
-					sprintf_s(hex, "%2X", buffer[i]);
-					line.m_str[i * 2] = hex[0];
-					line.m_str[i * 2 + 1] = hex[1];
-					++i;
-				}
-
-				g_oldPos += i;
-			}
-			else
-			{
-				ifs.getline(line.m_str, line.SIZE);
-			}
-
-			if (!m_isHexadecimal && ifs.eof())
-				break;
-
-			if (!line.empty() && (line != "\r"))
-			{
-				common::Str512 showText;
-
-				if (m_isRowNum)
-				{
-					sprintf_s(showText.m_str, "%5d: ", m_rowNumber);
-					++m_rowNumber;
-				}
-
-				// 파일이 너무크면, 화면에 모두 출력하지 않는다. lineNumber는 증가시킨다.
-				if (curSize - g_oldPos > 3000)
-					continue;
-
-				showText += line;
-				InsertString(showText);
-
-				if (m_outputType == eInputType::I_NETWORK) // send network
-				{
-					if (m_svr.IsConnect())
-					{
-						m_svr.m_sendQueue.Push(0, m_svr.m_protocol, (const BYTE*)line.c_str(), line.size());
-						m_svr.m_sendQueue.SendBroadcast(m_svr.m_sessions);
-					}
-				}
-			}
-
-			if (m_isHexadecimal)
-				break;
+			m_svr.m_sendQueue.Push(0, m_svr.m_protocol, (const BYTE*)line.c_str(), line.size());
+			m_svr.m_sendQueue.SendBroadcast(m_svr.m_sessions);
 		}
-
-		g_oldFileSize = curSize;
 	}
 }
 
 
+// split m_buffer with delimeter new line
+// return split string
+void MyFrame::SplitString(OUT vector<string> &out)
+{
+	common::Str512 tok;
+	common::WStr512 tok2;
+	int start = 0;
+	int i = 0;
+	while (m_curPos > i)
+	{
+		const char c = m_buffer[i];
+		if (('\r' != c) && ('\n' != c))
+		{
+			++i;
+			continue;
+		}
+
+		if (i - start >= 1)
+		{
+			int m = 0;
+			for (int k = start; k < i; ++k)
+				tok.m_str[m++] = m_buffer[k];
+
+			// convert utf-8 unicode string and then convert ansi string
+			tok2 = tok.wstrUTF8();
+			out.push_back(tok2.str().c_str());
+			tok.clear();
+		}
+
+		++i;
+		start = i;
+	}
+
+	if (start == m_curPos)
+	{
+		m_curPos = 0; // clear buffer
+	}
+	else if (0 != start)
+	{
+		// move data to front
+		int m = 0;
+		int k = start;
+		while(k < m_curPos)
+			m_buffer[m++] = m_buffer[k++];
+		m_curPos = m_curPos - start; // curPos indicate next write pos (+1)
+	}
+}
+
+
+// input from server
 void MyFrame::InputFromServer()
 {
 	using namespace std;
