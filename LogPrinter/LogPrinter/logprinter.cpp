@@ -1,19 +1,14 @@
-//
 // 2016-05-13, jjuiddong
 // 
 //	- first version
 //		- print log, error Red color, TopMost, Clear
-//
-// - ver 1.01
+//	- ver 1.01
 //		- display row line number
-//
-// - ver 1.02
+//	- ver 1.02
 //		- display hexadecimal
-//
-// - ver 1.03
+//	- ver 1.03
 //		- network send, recv
-//
-// - ver 1.04
+//	- ver 1.04
 //		- optimize & refactoring
 //		- maximum line = 500 -> 100
 //		- stop menu
@@ -23,11 +18,11 @@
 //					error = 1, 0, 0
 //					Error = 1, 0, 0
 //					Recv = 0, 1, 0
-//
-// - ver 1.06, 2021-07-27
-//	- ver 1.05 skip
-//	- string missing bug fix
-//
+//	- ver 1.06, 2021-07-27
+//		- ver 1.05 skip
+//		- string missing bug fix
+//	- ver 1.07, 2023-04-28
+//		- multithreading, read file
 //
 #include "../../../Common/Common/common.h"
 #include "wx/wxprec.h"
@@ -38,9 +33,7 @@
 #include "../../../Common/Network/network.h"
 #include <iomanip> // setw()
 
-string g_version = "ver 1.06";
-__int64 g_oldFileSize = -1;
-std::streampos g_oldPos = 0;
+string g_version = "ver 1.07";
 
 #pragma comment (lib, "winmm.lib")
 
@@ -53,10 +46,53 @@ public:
 	MyFrame *m_frame;
 };
 
+
+//---------------------------------------------------------------------------------
+// file read task
+class cFileReadTask : public common::cTask
+{
+public:
+	cFileReadTask(MyFrame* myFrm)
+		: cTask(0, "cFileReadTask")
+		, m_frm(myFrm)
+		, m_buffer(nullptr)
+		, m_bufferSize(2048)
+		, m_isReload(false)
+		, m_curPos(0)
+		, m_oldFileSize(-1)
+		, m_oldPos(0)
+	{
+		m_buffer = new char[m_bufferSize];
+	}
+	virtual ~cFileReadTask()
+	{
+		SAFE_DELETEA(m_buffer);
+	}
+
+	virtual eRunResult Run(const double deltaSeconds) override;
+	virtual void MessageProc(common::threadmsg::MSG msg
+		, WPARAM wParam, LPARAM lParam, LPARAM added)  override;
+	void ReadFile();
+	void SplitString(OUT vector<string>& out);
+
+
+public:
+	MyFrame* m_frm;
+	string m_fileName;
+	bool m_isReload;
+	__int64 m_oldFileSize; // read file size
+	std::streampos m_oldPos; // read file pointer
+	char* m_buffer;
+	int m_bufferSize;
+	int m_curPos; // current buffer pos(index)
+};
+
+
 class MyFrame : public wxFrame
 {
 public:
 	MyFrame(const wxString& title);
+	virtual ~MyFrame();
 	void MainLoop();
 	void OnQuit(wxCommandEvent& event);
 	void OnSize(wxSizeEvent& event);
@@ -70,19 +106,30 @@ public:
 	void OnMenuClear(wxCommandEvent& event);
 
 
-protected:
-	void InputFromFile();
+public:
 	void InputFromServer();
 	void ToggleTopMost();
-	void SplitString(OUT vector<string> &out);
-	void OutputString(const common::Str512 &str);
+	void AddString(const common::Str512& str);
+	void OutputString(const string &str);
 	void InsertString(const common::Str512 &str);
 
 
-private:
+public:
+	enum class eState {
+		Run, // running
+		Terminate, // terminate process
+	};
+
+	enum class eInputType {
+		NONE, // nothing~
+		FILE, // file stream
+		NETWORK // network stream 
+	};
+
+	eState m_state;
 	wxListCtrl *m_listCtrl;
 	string m_fileName;
-	int m_maxLineCount = 100; // 화면에 출력할 최대 라인 수 (실행인자 값으로 설정 가능, 두 번째 인자)
+	int m_maxLineCount = 100; // display maximum line count (commandline: logprinter.exe <> <line count>)
 	bool m_isReload;
 	bool m_isTopMost;
 	bool m_isRowNum;
@@ -90,24 +137,15 @@ private:
 	bool m_isAutoScroll;
 	bool m_isStop;
 	int m_rowNumber;
-
-	struct eInputType {
-		enum Enum {
-			I_NONE, I_FILE, I_NETWORK
-		};
-	};
-	eInputType::Enum m_inputType;
-	eInputType::Enum m_outputType;
+	eInputType m_inputType;
+	eInputType m_outputType;
 	string m_ip;
 	int m_port;
 	int m_bindPort;
 	int m_networkState; //-1:use not network, 0:before connect or bind, 1:after connect or bind
-	int m_outputNetworkState;//-1:use not network, 0:before connect or bind, 1:after connect or bind
-	double m_networkInitDelay; // 프로그램이 실행 되고 난 뒤, 몇 초후에 네트워크를 초기화할지를 나타냄. seconds
-	double m_outputNetworkInitDelay; // 프로그램이 실행 되고 난 뒤, 몇 초 후에 네트워크를 초기화할지를 나타냄. seconds
-	char *m_buffer;
-	int m_bufferSize;
-	int m_curPos; // current buffer pos(index)
+	int m_outputNetworkState; //-1:use not network, 0:before connect or bind, 1:after connect or bind
+	double m_networkInitDelay; // initialize network after run program. seconds unit
+	double m_outputNetworkInitDelay; // initialize network after run program. seconds unit
 	network::cTCPServer m_svr;
 	network::cTCPClient2 m_client;
 	common::cTimer m_timer;
@@ -116,6 +154,11 @@ private:
 		wxColour color;
 	};
 	vector<sTextColor> m_colors;
+	common::cWQSemaphore m_wqSema;
+	cFileReadTask* m_fileTask;
+	common::CriticalSection m_cs;
+	queue<string> m_strs; // string table
+
 	wxDECLARE_EVENT_TABLE();
 };
 
@@ -147,15 +190,6 @@ wxIMPLEMENT_APP(MyApp);
 
 bool MyApp::OnInit()
 {
-// 	if (__argc <= 1)
-// 	{
-// 		wxMessageBox(wxString::Format("command line input the filename \n"),
-// 			"Log Printer",
-// 			wxOK | wxICON_INFORMATION,
-// 			NULL);
-// 		return false;
-// 	}
-	
 	m_frame = NULL;
 	Connect(wxID_ANY, wxEVT_IDLE, wxIdleEventHandler(MyApp::OnIdle));
 
@@ -166,6 +200,7 @@ bool MyApp::OnInit()
 
 MyFrame::MyFrame(const wxString& title)
 	: wxFrame(NULL, wxID_ANY, title + " - " + g_version, wxDefaultPosition, wxSize(500, 500))
+	, m_state(eState::Run)
 	, m_isReload(true)
 	, m_isTopMost(false)
 	, m_isRowNum(true)
@@ -173,16 +208,14 @@ MyFrame::MyFrame(const wxString& title)
 	, m_isAutoScroll(true)
 	, m_isStop(false)
 	, m_rowNumber(1)
-	, m_inputType(eInputType::I_NONE)
-	, m_outputType(eInputType::I_NONE)
+	, m_inputType(eInputType::NONE)
+	, m_outputType(eInputType::NONE)
 	, m_networkState(-1)
 	, m_outputNetworkState(-1)
 	, m_networkInitDelay(0.3f)
 	, m_outputNetworkInitDelay(0.4f)
 	, m_svr(new network::cProtocol("LOGS"))
-	, m_buffer(nullptr)
-	, m_bufferSize(2048)
-	, m_curPos(0)
+	, m_fileTask(nullptr)
 {
 	SetIcon(wxICON(sample));
 
@@ -220,13 +253,13 @@ MyFrame::MyFrame(const wxString& title)
 				switch (i)
 				{
 				case 0: // bindport=
-					m_outputType = eInputType::I_NETWORK;
+					m_outputType = eInputType::NETWORK;
 					m_bindPort = atoi(param.c_str());
 					m_outputNetworkState = 0;
 					break;
 
 				case 1: // file=
-					m_inputType = eInputType::I_FILE;
+					m_inputType = eInputType::FILE;
 					m_fileName = param;
 					break;
 
@@ -236,21 +269,21 @@ MyFrame::MyFrame(const wxString& title)
 
 				case 3: // ip=
 					m_ip = param;
-					m_inputType = eInputType::I_NETWORK;
+					m_inputType = eInputType::NETWORK;
 					m_networkState = 0;
 					m_client.m_state = network::cTCPClient2::READYCONNECT;
 					break;
 
 				case 4: // port=
 					m_port = atoi(param.c_str());
-					m_inputType = eInputType::I_NETWORK;
+					m_inputType = eInputType::NETWORK;
 					m_networkState = 0;
 					break;
 
 				case 5: // oplog
 				{
 					// yyymmdd_AMROperation.txt
-					m_inputType = eInputType::I_FILE;
+					m_inputType = eInputType::FILE;
 					m_fileName = common::GetCurrentDateTime4() + "_AMROperation.log";
 					stringstream ss;
 					ss << "oplog = " << m_fileName;
@@ -297,16 +330,26 @@ MyFrame::MyFrame(const wxString& title)
 		m_colors.push_back(tColor);
 	}
 
-	m_buffer = new char[m_bufferSize];	
+	//m_buffer = new char[m_bufferSize];
+	m_fileTask = new cFileReadTask(this);
+	if (!m_fileName.empty())
+		m_fileTask->MessageProc(common::threadmsg::TASK_MSG, 0, 0, 0);
+	m_wqSema.PushTask(m_fileTask);
 
 	DragAcceptFiles(true);
 	Connect(wxEVT_DROP_FILES, wxDropFilesEventHandler(MyFrame::OnDropFiles), NULL, this);
 }
 
+MyFrame::~MyFrame()
+{
+	m_state = eState::Terminate;
+	m_wqSema.Clear();
+	m_fileTask = nullptr;
+}
+
 void MyFrame::OnQuit(wxCommandEvent& WXUNUSED(event))
 {
 	Close(true);
-	SAFE_DELETE(m_buffer);
 }
 
 
@@ -379,37 +422,42 @@ void MyFrame::OnSize(wxSizeEvent& event)
 
 void MyFrame::OnDropFiles(wxDropFilesEvent& event)
 {
-	if (event.GetNumberOfFiles() > 0) {
+	if (event.GetNumberOfFiles() <= 0)
+		return;
 
-		wxString* dropped = event.GetFiles();
-		wxASSERT(dropped);
-		m_fileName = *dropped;
-		m_isReload = true;
-		m_inputType = eInputType::I_FILE;
+	wxString* dropped = event.GetFiles();
+	wxASSERT(dropped);
+	m_fileName = dropped->c_str();
+	m_isReload = true;
+	m_inputType = eInputType::FILE;
 
-		if (!m_fileName.empty())
+	if (m_fileName.empty())
+		return;
+
+	std::stringstream ss;
+	if (m_outputType == eInputType::NONE)
+	{
+		ss << "file=" << m_fileName << " - " << g_version;
+	}
+	else
+	{
+		if (m_svr.IsConnect())
 		{
-			std::stringstream ss;
-			if (m_outputType == eInputType::I_NONE)
-			{
-				ss << "file=" << m_fileName << " - " << g_version;
-			}
-			else
-			{
-				if (m_svr.IsConnect())
-				{
-					ss << "file=" << m_fileName << " bindport=" << m_bindPort << " - " << g_version;
-				}
-				else
-				{
-					ss << "file=" << m_fileName << " - " << g_version;
-				}
-			}
-
-			SetTitle(ss.str());
-			//SetTitle(m_fileName + " - " + g_version);
+			ss << "file=" << m_fileName << " bindport=" << m_bindPort << " - " << g_version;
+		}
+		else
+		{
+			ss << "file=" << m_fileName << " - " << g_version;
 		}
 	}
+
+	// send reload message
+	if (eInputType::FILE == m_inputType)
+		if (m_fileTask)
+			m_fileTask->MessageProc(common::threadmsg::TASK_MSG, 0, 0, 0);
+
+	SetTitle(ss.str());
+	//SetTitle(m_fileName + " - " + g_version);
 }
 
 __int64 FileSize(std::string name)
@@ -424,20 +472,20 @@ __int64 FileSize(std::string name)
 }
 
 
-// 파일 사이즈가 바뀌면, 파일 정보를 출력한다.
+// mainloop, every call 0.1 second
 void MyFrame::MainLoop()
 {
 	static double oldT = m_timer.GetSeconds();
 	const double curT = m_timer.GetSeconds();
 	const double deltaT = curT - oldT;
-	if (deltaT < 0.1f)
-		return;
-	oldT = curT;
+	//if (deltaT < 0.1f)
+	//	return;
+	//oldT = curT;
 
 	if (m_isStop)
 		return;
 
-	if ((m_inputType == eInputType::I_NETWORK) && (m_networkState == 0))// network input
+	if ((m_inputType == eInputType::NETWORK) && (m_networkState == 0))// network input
 	{
 		m_networkInitDelay -= deltaT;
 		if (m_networkInitDelay < 0)
@@ -464,7 +512,7 @@ void MyFrame::MainLoop()
 		}
 	}
 
-	if ((m_outputType == eInputType::I_NETWORK) && (m_outputNetworkState == 0))// network output
+	if ((m_outputType == eInputType::NETWORK) && (m_outputNetworkState == 0))// network output
 	{
 		m_outputNetworkInitDelay -= deltaT;
 		if (m_outputNetworkInitDelay < 0)
@@ -493,103 +541,33 @@ void MyFrame::MainLoop()
 
 	switch (m_inputType)
 	{
-	case eInputType::I_NONE: break;
-	case eInputType::I_FILE: InputFromFile(); break;
-	case eInputType::I_NETWORK: InputFromServer(); break;
+	case eInputType::NONE: break;
+	case eInputType::FILE:
+	{
+		common::AutoCSLock cs(m_cs);
+		if (!m_strs.empty())
+		{
+			OutputString(m_strs.front());
+			m_strs.pop();
+		}
+	}
+	break;
+	case eInputType::NETWORK: InputFromServer(); break;
 	default: assert(0); break;
 	}
 }
 
 
-// input from file
-void MyFrame::InputFromFile()
+// add string
+void MyFrame::AddString(const common::Str512& str)
 {
-	using namespace std;
-
-	const __int64 curSize = FileSize(m_fileName);
-	if (curSize <= 0)
-		return;
-
-	if (!m_isReload && (curSize == g_oldFileSize))
-		return; // nothing to do
-
-	ifstream ifs(m_fileName, ios::binary);
-	if (!ifs.is_open())
-		return;
-
-	if (m_isReload || (curSize < g_oldFileSize))
-	{
-		g_oldPos = ifs.tellg();
-		m_isReload = false;
-	}
-	else
-	{
-		ifs.seekg(g_oldPos, std::ios::beg);
-	}
-
-	while (1)
-	{
-		g_oldPos = ifs.tellg();
-
-		common::Str512 line;
-		if (m_isHexadecimal)
-		{
-			char buffer[64];
-			ZeroMemory(buffer, sizeof(buffer));
-			ifs.read(buffer, sizeof(buffer) - 1);
-
-			int i = 0;
-			while (1)
-			{
-				if (!buffer[i])
-					break;
-
-				char hex[3] = { NULL, NULL, NULL };
-				sprintf_s(hex, "%2X", buffer[i]);
-				line.m_str[i * 2] = hex[0];
-				line.m_str[i * 2 + 1] = hex[1];
-				++i;
-			}
-
-			// todo: all hexacode parsing
-			OutputString(line);
-
-			g_oldPos += i;
-		}
-		else
-		{
-			const int remainSize = m_bufferSize - m_curPos;
-			const __int64 oldFileSize = max((__int64)0, g_oldFileSize);
-			const int cpySize = (int)min((__int64)remainSize, curSize - oldFileSize);
-			if (cpySize <= 0)
-				break;
-
-			ifs.read(m_buffer + m_curPos, cpySize);
-			const size_t extracted = ifs.gcount(); // actual read byte size
-			g_oldPos = ifs.tellg(); // update current file pos
-			m_curPos += extracted;
-			g_oldFileSize = oldFileSize + extracted;
-
-			vector<string> strs;
-			SplitString(strs);
-			for (auto &str : strs)
-				OutputString(str);
-			if (strs.empty() || (0 == extracted))
-				break;
-		}
-
-		if (!m_isHexadecimal && ifs.eof())
-			break;
-		if (m_isHexadecimal)
-			break;
-	}
-
-	g_oldFileSize = curSize;	
+	common::AutoCSLock cs(m_cs);
+	m_strs.push(str.c_str());
 }
 
 
 // output string to listctrl
-void MyFrame::OutputString(const common::Str512 &line)
+void MyFrame::OutputString(const string &line)
 {
 	if (line.empty() || (line == "\r"))
 		return;
@@ -603,68 +581,19 @@ void MyFrame::OutputString(const common::Str512 &line)
 	}
 
 	// 파일이 너무크면, 화면에 모두 출력하지 않는다. lineNumber는 증가시킨다.
-	//if (curSize - g_oldPos > 3000)
+	//if (curSize - m_oldPos > 3000)
 	//	continue;
 
 	showText += line;
 	InsertString(showText);
 
-	if (m_outputType == eInputType::I_NETWORK) // send network
+	if (m_outputType == eInputType::NETWORK) // send network
 	{
 		if (m_svr.IsConnect())
 		{
 			m_svr.m_sendQueue.Push(0, m_svr.m_protocol, (const BYTE*)line.c_str(), line.size());
 			m_svr.m_sendQueue.SendBroadcast(m_svr.m_sessions);
 		}
-	}
-}
-
-
-// split m_buffer with delimeter new line
-// return split string
-void MyFrame::SplitString(OUT vector<string> &out)
-{
-	common::Str512 tok;
-	common::WStr512 tok2;
-	int start = 0;
-	int i = 0;
-	while (m_curPos > i)
-	{
-		const char c = m_buffer[i];
-		if (('\r' != c) && ('\n' != c))
-		{
-			++i;
-			continue;
-		}
-
-		if (i - start >= 1)
-		{
-			int m = 0;
-			for (int k = start; k < i; ++k)
-				tok.m_str[m++] = m_buffer[k];
-
-			// convert utf-8 unicode string and then convert ansi string
-			tok2 = tok.wstrUTF8();
-			out.push_back(tok2.str().c_str());
-			tok.clear();
-		}
-
-		++i;
-		start = i;
-	}
-
-	if (start == m_curPos)
-	{
-		m_curPos = 0; // clear buffer
-	}
-	else if (0 != start)
-	{
-		// move data to front
-		int m = 0;
-		int k = start;
-		while(k < m_curPos)
-			m_buffer[m++] = m_buffer[k++];
-		m_curPos = m_curPos - start; // curPos indicate next write pos (+1)
 	}
 }
 
@@ -737,6 +666,190 @@ void MyApp::OnIdle(wxIdleEvent& event)
 {	
 	if (m_frame)
 		m_frame->MainLoop();
-	Sleep(10);
 	event.RequestMore();
+}
+
+
+//---------------------------------------------------------------------------------
+// file read task
+// 
+// task running
+common::cTask::eRunResult cFileReadTask::Run(const double deltaSeconds)
+{
+	while (MyFrame::eState::Run == m_frm->m_state)
+	{
+		ReadFile();
+		Sleep(10);
+	}
+	return eRunResult::End;
+}
+
+
+// message process
+void cFileReadTask::MessageProc(common::threadmsg::MSG msg
+	, WPARAM wParam, LPARAM lParam, LPARAM added) 
+{
+	using namespace common::threadmsg;
+	switch (msg)
+	{
+	case TASK_MSG:
+	{
+		if (0 == wParam) // reload?
+		{
+			m_isReload = true;
+			m_fileName = m_frm->m_fileName;
+		}
+	}
+	break;
+	}
+}
+
+
+// input from file
+void cFileReadTask::ReadFile()
+{
+	using namespace std;
+	if (m_fileName.empty())
+		return; // nothing to do
+
+	const __int64 fileSize = FileSize(m_fileName);
+	if (fileSize <= 0)
+		return;
+
+	if (!m_isReload && (fileSize == m_oldFileSize))
+		return; // nothing to do
+
+	ifstream ifs(m_fileName, ios::binary);
+	if (!ifs.is_open())
+		return;
+
+	if (m_isReload || (fileSize < m_oldFileSize))
+	{
+		m_oldPos = ifs.tellg();
+		m_isReload = false;
+		m_oldFileSize = 0;
+	}
+	else
+	{
+		ifs.seekg(m_oldPos, std::ios::beg);
+	}
+
+	while (1)
+	{
+		m_oldPos = ifs.tellg();
+
+		common::Str512 line;
+		if (m_frm->m_isHexadecimal)
+		{
+			char buffer[64];
+			ZeroMemory(buffer, sizeof(buffer));
+			ifs.read(buffer, sizeof(buffer) - 1);
+
+			int i = 0;
+			while (1)
+			{
+				if (!buffer[i])
+					break;
+
+				char hex[3] = { NULL, NULL, NULL };
+				sprintf_s(hex, "%2X", buffer[i]);
+				line.m_str[i * 2] = hex[0];
+				line.m_str[i * 2 + 1] = hex[1];
+				++i;
+			}
+
+			// todo: all hexacode parsing
+			m_frm->AddString(line);
+
+			m_oldPos += i;
+			m_oldFileSize = fileSize;
+		}
+		else
+		{
+			const int remainSize = m_bufferSize - m_curPos;
+			const __int64 oldFileSize = max((__int64)0, m_oldFileSize);
+			const int cpySize = (int)min((__int64)remainSize, fileSize - oldFileSize);
+			if (cpySize <= 0)
+				break;
+
+			ifs.read(m_buffer + m_curPos, cpySize);
+			const size_t extracted = ifs.gcount(); // actual read byte size
+			if (extracted == 0)
+				break; // read error
+			m_oldPos = ifs.tellg(); // update current file pos
+			m_curPos += extracted;
+			m_oldFileSize = oldFileSize + extracted;
+
+			if (abs(fileSize - oldFileSize) > (m_bufferSize * 2))
+			{
+				m_curPos = 0;
+				continue; // too much scroll, ignore data
+			}
+
+			vector<string> strs;
+			SplitString(strs);
+
+			for (auto& str : strs)
+				m_frm->AddString(str);
+
+			break; // to fast response
+		}
+
+		if (!m_frm->m_isHexadecimal && ifs.eof())
+			break;
+		if (m_frm->m_isHexadecimal)
+			break;
+	}
+}
+
+
+// split m_buffer with delimeter new line
+// return split string
+void cFileReadTask::SplitString(OUT vector<string>& out)
+{
+	static common::String<char, 2049> tok;
+	static common::String<wchar_t, 2049> tok2;
+	int start = 0;
+	int i = 0;
+	while (m_curPos > i)
+	{
+		const char c = m_buffer[i];
+		if (('\r' != c) && ('\n' != c))
+		{
+			if (i - start < 200)
+			{
+				++i;
+				continue;
+			}
+		}
+
+		if (i - start >= 1)
+		{
+			int m = 0;
+			for (int k = start; k < i; ++k)
+				if ((int)tok.SIZE > m)
+					tok.m_str[m++] = m_buffer[k];
+			if (('\r' != c) && ('\n' != c))
+				tok.m_str[m++] = c;
+			tok.m_str[m] = NULL;
+
+			// convert utf-8 unicode string and then convert ansi string
+			tok2 = tok.wstrUTF8();
+			out.push_back(tok2.str().c_str());
+			tok.clear();
+		}
+
+		++i;
+		start = i;
+	}
+
+	if (0 != start)
+	{
+		// move data to front
+		int m = 0;
+		int k = start;
+		while (k < m_curPos)
+			m_buffer[m++] = m_buffer[k++];
+		m_curPos = m; // curPos indicate next write pos
+	}
 }
