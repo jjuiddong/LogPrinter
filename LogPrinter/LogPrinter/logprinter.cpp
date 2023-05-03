@@ -780,7 +780,7 @@ void cFileReadTask::ReadFile()
 			m_curPos += extracted;
 			m_oldFileSize = oldFileSize + extracted;
 
-			if (abs(fileSize - oldFileSize) > (m_bufferSize * 2))
+			if (abs(fileSize - oldFileSize) > (m_bufferSize * 10))
 			{
 				m_curPos = 0;
 				continue; // too much scroll, ignore data
