@@ -56,7 +56,6 @@ public:
 		: cTask(0, "cFileReadTask")
 		, m_frm(myFrm)
 		, m_buffer(nullptr)
-		, m_bufferSize(2048)
 		, m_isReload(false)
 		, m_curPos(0)
 		, m_oldFileSize(-1)
@@ -83,7 +82,8 @@ public:
 	__int64 m_oldFileSize; // read file size
 	std::streampos m_oldPos; // read file pointer
 	char* m_buffer;
-	int m_bufferSize;
+	int m_bufferSize = 2048;
+	int m_maxScrollSize = 10; // size = m_bufferSize * m_maxScrollSize
 	int m_curPos; // current buffer pos(index)
 };
 
@@ -102,6 +102,7 @@ public:
 	void OnMenuToggleRowNum(wxCommandEvent& event);
 	void OnMenuToggleHexadecimal(wxCommandEvent& event);
 	void OnMenuToggleAutoscroll(wxCommandEvent& event);
+	void OnMenuFastscroll(wxCommandEvent& event);
 	void OnMenuToggleStop(wxCommandEvent& event);
 	void OnMenuClear(wxCommandEvent& event);
 
@@ -110,7 +111,7 @@ public:
 	void InputFromServer();
 	void ToggleTopMost();
 	void AddString(const common::Str512& str);
-	void OutputString(const string &str);
+	void OutputString(const string &str, const int strSize);
 	void InsertString(const common::Str512 &str);
 
 
@@ -158,6 +159,7 @@ public:
 	cFileReadTask* m_fileTask;
 	common::CriticalSection m_cs;
 	queue<string> m_strs; // string table
+	int m_updateCnt = 3;
 
 	wxDECLARE_EVENT_TABLE();
 };
@@ -170,6 +172,7 @@ enum
 	MENU_TOGGLE_ROWNUM,
 	MENU_TOGGLE_HEXA,
 	MENU_TOGGLE_AUTOSCROL,
+	MENU_TOGGLE_FASTSCROL,
 	MENU_TOGGLE_STOP,
 	MENU_CLEAR,
 };
@@ -182,6 +185,7 @@ EVT_MENU(MENU_TOGGLE_TOPMOST, MyFrame::OnMenuToggleTopMost)
 EVT_MENU(MENU_TOGGLE_ROWNUM, MyFrame::OnMenuToggleRowNum)
 EVT_MENU(MENU_TOGGLE_HEXA, MyFrame::OnMenuToggleHexadecimal)
 EVT_MENU(MENU_TOGGLE_AUTOSCROL, MyFrame::OnMenuToggleAutoscroll)
+EVT_MENU(MENU_TOGGLE_FASTSCROL, MyFrame::OnMenuFastscroll)
 EVT_MENU(MENU_TOGGLE_STOP, MyFrame::OnMenuToggleStop)
 EVT_MENU(MENU_CLEAR, MyFrame::OnMenuClear)
 wxEND_EVENT_TABLE()
@@ -330,7 +334,6 @@ MyFrame::MyFrame(const wxString& title)
 		m_colors.push_back(tColor);
 	}
 
-	//m_buffer = new char[m_bufferSize];
 	m_fileTask = new cFileReadTask(this);
 	if (!m_fileName.empty())
 		m_fileTask->MessageProc(common::threadmsg::TASK_MSG, 0, 0, 0);
@@ -372,6 +375,7 @@ void MyFrame::OnContextMenu(wxContextMenuEvent& event)
 	menu.AppendCheckItem(MENU_TOGGLE_ROWNUM, wxT("&Toggle Row Number"));
 	menu.AppendCheckItem(MENU_TOGGLE_HEXA, wxT("&Toggle Hexadecimal"));
 	menu.AppendCheckItem(MENU_TOGGLE_AUTOSCROL, wxT("&Toggle AutoScroll"));
+	menu.AppendCheckItem(MENU_TOGGLE_FASTSCROL, wxT("&Fast Scroll"));
 	menu.AppendCheckItem(MENU_TOGGLE_STOP, wxT("&Stop"));
 	menu.AppendCheckItem(MENU_CLEAR, wxT("&Clear"));
 	menu.Check(MENU_TOGGLE_TOPMOST, m_isTopMost);
@@ -402,6 +406,12 @@ void MyFrame::OnMenuToggleAutoscroll(wxCommandEvent& event)
 	m_isAutoScroll = !m_isAutoScroll;
 }
 
+void MyFrame::OnMenuFastscroll(wxCommandEvent& event)
+{
+	m_updateCnt = 100;
+	m_fileTask->m_maxScrollSize = 1;
+}
+
 void MyFrame::OnMenuToggleStop(wxCommandEvent& event)
 {
 	m_isStop = !m_isStop;
@@ -412,6 +422,12 @@ void MyFrame::OnMenuClear(wxCommandEvent& event)
 	if (m_listCtrl)
 		m_listCtrl->DeleteAllItems();
 	m_rowNumber = 1;
+
+	{
+		common::AutoCSLock cs(m_cs);
+		while (!m_strs.empty())
+			m_strs.pop();
+	}
 }
 
 void MyFrame::OnSize(wxSizeEvent& event)
@@ -545,11 +561,14 @@ void MyFrame::MainLoop()
 	case eInputType::FILE:
 	{
 		common::AutoCSLock cs(m_cs);
-		if (!m_strs.empty())
+		int cnt = 0;
+		while (!m_strs.empty() && (cnt++ < m_updateCnt))
 		{
-			OutputString(m_strs.front());
+			OutputString(m_strs.front(), (int)m_strs.size());
 			m_strs.pop();
 		}
+		if ((m_updateCnt >= 10) && (m_strs.size() < 10))
+			m_updateCnt = 3;
 	}
 	break;
 	case eInputType::NETWORK: InputFromServer(); break;
@@ -567,22 +586,27 @@ void MyFrame::AddString(const common::Str512& str)
 
 
 // output string to listctrl
-void MyFrame::OutputString(const string &line)
+void MyFrame::OutputString(const string &line, const int strSize)
 {
 	if (line.empty() || (line == "\r"))
 		return;
 
-	common::Str512 showText;
+	// remove list item
+	{
+		const int itemCount = m_listCtrl->GetItemCount();
+		const int remainSize = m_maxLineCount - itemCount;
+		const int rmSize = (strSize > remainSize) ? (strSize - remainSize) : 0;
+		int size = min(itemCount, rmSize);
+		if (size >= (int)(m_maxLineCount * 0.65f))
+			m_listCtrl->DeleteAllItems();
+	}
 
+	common::Str512 showText;
 	if (m_isRowNum)
 	{
 		sprintf_s(showText.m_str, "%5d: ", m_rowNumber);
 		++m_rowNumber;
 	}
-
-	// 파일이 너무크면, 화면에 모두 출력하지 않는다. lineNumber는 증가시킨다.
-	//if (curSize - m_oldPos > 3000)
-	//	continue;
 
 	showText += line;
 	InsertString(showText);
@@ -666,6 +690,7 @@ void MyApp::OnIdle(wxIdleEvent& event)
 {	
 	if (m_frame)
 		m_frame->MainLoop();
+	Sleep(1);
 	event.RequestMore();
 }
 
@@ -780,10 +805,14 @@ void cFileReadTask::ReadFile()
 			m_curPos += extracted;
 			m_oldFileSize = oldFileSize + extracted;
 
-			if (abs(fileSize - oldFileSize) > (m_bufferSize * 10))
+			if (abs(fileSize - oldFileSize) > (m_bufferSize * m_maxScrollSize))
 			{
 				m_curPos = 0;
 				continue; // too much scroll, ignore data
+			}
+			else
+			{
+				m_maxScrollSize = 10; // recovery
 			}
 
 			vector<string> strs;
